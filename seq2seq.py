@@ -14,6 +14,7 @@ import keras.regularizers as KR
 import keras.utils as KUtils
 import numpy as np
 import random
+import keras.backend as KB
 from typing import List, Tuple, Dict
 
 UNKNOWN = "UNKNOWN_TOK"
@@ -169,7 +170,7 @@ def fit_model(model: KM.Model, data: TrainingData, batch_size: int, epochs: int)
 
 
 def inference_model(encoder_inputs: KL.Input, decoder_inputs: KL.Input, encoder_states, 
-                        latent_dim: int, decoder_embed, decoder_lstm, decoder_dense) -> Tuple[KM.Model, KM.Model]:
+                        decoder_embed, decoder_lstm, decoder_dense, latent_dim: int=64,) -> Tuple[KM.Model, KM.Model]:
     encoder_model = KM.Model(inputs=encoder_inputs, outputs=encoder_states)
 
     sampling_state_input_h = KL.Input(shape=(latent_dim,))
@@ -186,10 +187,17 @@ def inference_model(encoder_inputs: KL.Input, decoder_inputs: KL.Input, encoder_
     return (encoder_model, decoder_model)    
 
 
-def train_model(data: TrainingData, dims: TrainingDims, 
-                batch_size: int=64, latent_dim: int=64,
+def train_model(data: TrainingData, dims: TrainingDims, optimizer_name='adam',
+                learning_rate=0.001, batch_size: int=64, latent_dim: int=64, dropout=0.0,
                 epochs: int=1, print_samples=True, sample_text=None) -> Tuple[KM.Model, KM.Model]:
+
     # define our model for training
+    if optimizer_name == 'adam':
+        optimizer = keras.optimizers.Adam(lr=learning_rate)
+    elif optimizer_name == 'rmsprop':
+        optimizer = keras.optimizers.RMSprop(lr=learning_rate)
+    else:
+        raise RuntimeError("nope")
 
     # define encoder (given a question, generate hidden state)
     encoder_inputs = KL.Input(shape=(None,))
@@ -203,19 +211,20 @@ def train_model(data: TrainingData, dims: TrainingDims,
     decoder_embed = KL.Embedding(dims.output_tokens + 1, latent_dim, mask_zero=True)
     decoder_lstm = KL.LSTM(latent_dim,
         return_sequences=True, return_state=True)
+    decoder_dropout = KL.Dropout(dropout)
     decoder_dense = KL.Dense(dims.output_tokens, activation='softmax')
 
     # define how input flows through decoder nodes to get output
     embedded_inputs = decoder_embed(decoder_inputs)
     decoder_sequence_outputs, _, _ = decoder_lstm(embedded_inputs, initial_state=encoder_states)
-    decoder_outputs = decoder_dense(decoder_sequence_outputs)
+    decoder_outputs = decoder_dense(decoder_dropout(decoder_sequence_outputs))
 
     # training model takes question AND answer inputs and gives answer outputs
     # we define question & answer inputs (not just questions) b/c we use teacher forcing
     model = KM.Model(inputs=[encoder_inputs, decoder_inputs], outputs=decoder_outputs)
 
     # compile & train
-    model.compile(optimizer=keras.optimizers.Adam(lr=0.01), loss='categorical_crossentropy')
+    model.compile(optimizer=optimizer, loss='categorical_crossentropy')
 
 
     if print_samples:
@@ -223,7 +232,7 @@ def train_model(data: TrainingData, dims: TrainingDims,
         while epochs_remaining > 10:
             fit_model(model, data, batch_size=batch_size, epochs=10)
             (encoder, decoder) = inference_model(encoder_inputs, decoder_inputs, encoder_states, 
-                        latent_dim, decoder_embed, decoder_lstm, decoder_dense)
+                        decoder_embed, decoder_lstm, decoder_dense, latent_dim)
 
             if sample_text:
                 sample_in_text = sample_text
@@ -243,12 +252,12 @@ def train_model(data: TrainingData, dims: TrainingDims,
 
         fit_model(model, data, batch_size=batch_size, epochs=epochs_remaining)
         (encoder, decoder) = inference_model(encoder_inputs, decoder_inputs, encoder_states, 
-                        latent_dim, decoder_embed, decoder_lstm, decoder_dense)
+                        decoder_embed, decoder_lstm, decoder_dense, latent_dim)
 
     else:
         fit_model(model, data, batch_size=batch_size, epochs=epochs)
         return inference_model(encoder_inputs, decoder_inputs, encoder_states, 
-                        latent_dim, decoder_embed, decoder_lstm, decoder_dense)
+                        decoder_embed, decoder_lstm, decoder_dense, latent_dim)
 
     generative_models = (encoder, decoder)
     return generative_models
